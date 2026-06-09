@@ -30,8 +30,22 @@ if ([string]::IsNullOrWhiteSpace($BenchmarkBuildDir)) {
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OrtSrc), $OrtBuildDir | Out-Null
 
+function Invoke-Checked {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$Arguments
+  )
+
+  & $FilePath @Arguments
+  if ($LASTEXITCODE -ne 0) {
+    throw "'$FilePath' failed with exit code $LASTEXITCODE."
+  }
+}
+
 function Import-VsDevEnvironment {
-  if (Get-Command cl.exe -ErrorAction SilentlyContinue) {
+  if ((Get-Command cl.exe -ErrorAction SilentlyContinue) -and $env:VCToolsInstallDir) {
     return
   }
 
@@ -71,6 +85,16 @@ function Import-VsDevEnvironment {
 
 Import-VsDevEnvironment
 
+$cl = Get-Command cl.exe -ErrorAction Stop
+$env:CC = $cl.Source
+$env:CXX = $cl.Source
+
+$vsNinja = Join-Path $env:VSINSTALLDIR "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
+if (Test-Path $vsNinja) {
+  $env:CMAKE_MAKE_PROGRAM = $vsNinja
+  $env:PATH = "$(Split-Path -Parent $vsNinja);$env:PATH"
+}
+
 function Clear-CMakeGeneratorCacheIfNeeded {
   param(
     [Parameter(Mandatory = $true)]
@@ -105,11 +129,17 @@ function Clear-CMakeGeneratorCacheIfNeeded {
 
 Clear-CMakeGeneratorCacheIfNeeded -BuildDir (Join-Path $OrtBuildDir $Config) -ExpectedGenerator $CMakeGenerator
 
+$detectCompilerBuildTree = Join-Path $OrtBuildDir "vcpkg\buildtrees\detect_compiler"
+if (Test-Path $detectCompilerBuildTree) {
+  Write-Host "Removing stale vcpkg detect_compiler cache."
+  Remove-Item -LiteralPath $detectCompilerBuildTree -Recurse -Force
+}
+
 if (-not (Test-Path (Join-Path $OrtSrc ".git"))) {
-  git clone --depth 1 https://github.com/microsoft/onnxruntime.git $OrtSrc
+  Invoke-Checked git clone --depth 1 https://github.com/microsoft/onnxruntime.git $OrtSrc
 } else {
-  git -C $OrtSrc fetch --depth 1 origin main
-  git -C $OrtSrc checkout FETCH_HEAD
+  Invoke-Checked git -C $OrtSrc fetch --depth 1 origin main
+  Invoke-Checked git -C $OrtSrc checkout FETCH_HEAD
 }
 
 $cmakeDefines = @(
@@ -123,6 +153,10 @@ if ($DawnBackend -eq "d3d12") {
 } else {
   $cmakeDefines += "onnxruntime_ENABLE_DAWN_BACKEND_D3D12=OFF"
   $cmakeDefines += "onnxruntime_ENABLE_DAWN_BACKEND_VULKAN=ON"
+}
+
+if ($env:CMAKE_MAKE_PROGRAM) {
+  $cmakeDefines += "CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM"
 }
 
 $buildArgs = @(
@@ -147,7 +181,7 @@ if (-not $NoVcpkg) {
 $buildArgs += "--cmake_extra_defines"
 $buildArgs += $cmakeDefines
 
-python $buildArgs
+Invoke-Checked python @buildArgs
 
 $ortOut = Join-Path $OrtBuildDir $Config
 $webgpuPlugin = Join-Path $ortOut "onnxruntime_providers_webgpu.dll"
@@ -164,8 +198,8 @@ if (-not $SkipBenchmark) {
     "-DORT_WEBGPU_PLUGIN=$webgpuPlugin"
   )
 
-  cmake $benchmarkConfigureArgs
-  cmake --build $BenchmarkBuildDir --config $Config
+  Invoke-Checked cmake @benchmarkConfigureArgs
+  Invoke-Checked cmake --build $BenchmarkBuildDir --config $Config
 }
 
 Write-Host ""

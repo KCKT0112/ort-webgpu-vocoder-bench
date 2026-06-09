@@ -333,6 +333,10 @@ PyTorch ckpt MPS, remove weight norm: mean=125.904 ms, RTF=0.042, 23.607x realti
 - Re-run `scripts/build_ort_webgpu.ps1`; the Windows helper removes stale CMake configure cache when its generator changes.
 - If you manually changed build directories, remove that directory's `CMakeCache.txt` and `CMakeFiles/`.
 
+`vcpkg was unable to detect the active compiler's information`:
+
+- Re-run `scripts/build_ort_webgpu.ps1`; the Windows helper loads the MSVC environment, pins `CC`/`CXX` to `cl.exe`, uses Visual Studio's Ninja when available, and removes stale `vcpkg/buildtrees/detect_compiler` cache.
+
 Plugin registration fails:
 
 - Ensure the WebGPU plugin library and its runtime dependencies are next to the executable or pass `--plugin`.
