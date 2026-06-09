@@ -109,6 +109,8 @@ To override the MSVC toolset passed to ONNX Runtime/vcpkg:
 .\scripts\build_ort_webgpu.ps1 -MsvcToolset "14.50"
 ```
 
+The ORT build step retries transient failures, such as interrupted Git downloads, up to three times by default. Override with `-OrtBuildRetries N`.
+
 After build, set these variables or pass equivalent CMake options:
 
 ```text

@@ -7,6 +7,7 @@ param(
   [string]$CMakeGenerator = "Ninja",
   [string]$MsvcToolset = "",
   [string]$BenchmarkBuildDir = "",
+  [int]$OrtBuildRetries = 3,
   [switch]$SkipBenchmark,
   [switch]$NoVcpkg
 )
@@ -137,11 +138,24 @@ function Clear-CMakeGeneratorCacheIfNeeded {
 
 Clear-CMakeGeneratorCacheIfNeeded -BuildDir (Join-Path $OrtBuildDir $Config) -ExpectedGenerator $CMakeGenerator
 
-$detectCompilerBuildTree = Join-Path $OrtBuildDir "vcpkg\buildtrees\detect_compiler"
-if (Test-Path $detectCompilerBuildTree) {
-  Write-Host "Removing stale vcpkg detect_compiler cache."
-  Remove-Item -LiteralPath $detectCompilerBuildTree -Recurse -Force
+function Clear-OrtTransientBuildState {
+  $vcpkgDir = Join-Path $OrtBuildDir "vcpkg"
+  if (Test-Path $vcpkgDir) {
+    $vcpkgToolchain = Join-Path $vcpkgDir "scripts\buildsystems\vcpkg.cmake"
+    if (-not (Test-Path $vcpkgToolchain)) {
+      Write-Host "Removing incomplete vcpkg checkout."
+      Remove-Item -LiteralPath $vcpkgDir -Recurse -Force
+    }
+  }
+
+  $detectCompilerBuildTree = Join-Path $OrtBuildDir "vcpkg\buildtrees\detect_compiler"
+  if (Test-Path $detectCompilerBuildTree) {
+    Write-Host "Removing stale vcpkg detect_compiler cache."
+    Remove-Item -LiteralPath $detectCompilerBuildTree -Recurse -Force
+  }
 }
+
+Clear-OrtTransientBuildState
 
 if (-not (Test-Path (Join-Path $OrtSrc ".git"))) {
   Invoke-Checked git clone --depth 1 https://github.com/microsoft/onnxruntime.git $OrtSrc
@@ -197,7 +211,25 @@ if (-not $NoVcpkg) {
 $buildArgs += "--cmake_extra_defines"
 $buildArgs += $cmakeDefines
 
-Invoke-Checked python @buildArgs
+if ($OrtBuildRetries -lt 1) {
+  throw "-OrtBuildRetries must be at least 1."
+}
+
+for ($attempt = 1; $attempt -le $OrtBuildRetries; ++$attempt) {
+  try {
+    Invoke-Checked python @buildArgs
+    break
+  } catch {
+    if ($attempt -ge $OrtBuildRetries) {
+      throw
+    }
+
+    Write-Warning "ORT build attempt $attempt failed: $($_.Exception.Message)"
+    Clear-OrtTransientBuildState
+    Start-Sleep -Seconds ([Math]::Min(30, 5 * $attempt))
+    Write-Host "Retrying ORT build ($($attempt + 1)/$OrtBuildRetries)."
+  }
+}
 
 $ortOut = Join-Path $OrtBuildDir $Config
 $webgpuPlugin = Join-Path $ortOut "onnxruntime_providers_webgpu.dll"
