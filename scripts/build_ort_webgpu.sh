@@ -7,12 +7,10 @@ REPO_ROOT="$(cd "${PROJECT_DIR}/.." && pwd)"
 
 case "$(uname -s)" in
   Darwin)
-    DEFAULT_TMP="/private/tmp"
     DEFAULT_ARCH="$(uname -m)"
     USE_VCPKG_DEFAULT=1
     ;;
   Linux)
-    DEFAULT_TMP="${TMPDIR:-/tmp}"
     DEFAULT_ARCH=""
     USE_VCPKG_DEFAULT=0
     ;;
@@ -22,11 +20,13 @@ case "$(uname -s)" in
     ;;
 esac
 
-ORT_SRC="${ORT_SRC:-${DEFAULT_TMP}/onnxruntime-webgpu-src}"
-ORT_BUILD_DIR="${ORT_BUILD_DIR:-${DEFAULT_TMP}/onnxruntime-webgpu-build}"
+ORT_SRC="${ORT_SRC:-${PROJECT_DIR}/.deps/onnxruntime-webgpu-src}"
+ORT_BUILD_DIR="${ORT_BUILD_DIR:-${PROJECT_DIR}/artifacts/onnxruntime-webgpu-build}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 USE_VCPKG="${USE_VCPKG:-${USE_VCPKG_DEFAULT}}"
 CMAKE_OSX_ARCHITECTURES="${CMAKE_OSX_ARCHITECTURES:-${DEFAULT_ARCH}}"
+
+mkdir -p "$(dirname "${ORT_SRC}")" "${ORT_BUILD_DIR}"
 
 if [[ ! -d "${ORT_SRC}/.git" ]]; then
   git clone --depth 1 https://github.com/microsoft/onnxruntime.git "${ORT_SRC}"

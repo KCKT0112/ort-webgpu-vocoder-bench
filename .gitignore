@@ -1,4 +1,6 @@
 build/
 cmake-build-*/
+.deps/
+artifacts/
 .idea/
 .DS_Store

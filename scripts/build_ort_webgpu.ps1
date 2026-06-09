@@ -1,6 +1,6 @@
 param(
-  [string]$OrtSrc = "$env:TEMP\onnxruntime-webgpu-src",
-  [string]$OrtBuildDir = "$env:TEMP\onnxruntime-webgpu-build",
+  [string]$OrtSrc = "",
+  [string]$OrtBuildDir = "",
   [string]$Config = "Release",
   [ValidateSet("d3d12", "vulkan")]
   [string]$DawnBackend = "d3d12",
@@ -12,6 +12,16 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectDir = Resolve-Path (Join-Path $ScriptDir "..")
 $RepoRoot = Resolve-Path (Join-Path $ProjectDir "..")
+
+if ([string]::IsNullOrWhiteSpace($OrtSrc)) {
+  $OrtSrc = Join-Path $ProjectDir ".deps\onnxruntime-webgpu-src"
+}
+
+if ([string]::IsNullOrWhiteSpace($OrtBuildDir)) {
+  $OrtBuildDir = Join-Path $ProjectDir "artifacts\onnxruntime-webgpu-build"
+}
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OrtSrc), $OrtBuildDir | Out-Null
 
 if (-not (Test-Path (Join-Path $OrtSrc ".git"))) {
   git clone --depth 1 https://github.com/microsoft/onnxruntime.git $OrtSrc

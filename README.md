@@ -72,8 +72,8 @@ scripts/build_ort_webgpu.sh
 Useful environment variables:
 
 ```bash
-ORT_SRC=/tmp/onnxruntime-webgpu-src
-ORT_BUILD_DIR=/tmp/onnxruntime-webgpu-build
+ORT_SRC=./.deps/onnxruntime-webgpu-src
+ORT_BUILD_DIR=./artifacts/onnxruntime-webgpu-build
 BUILD_TYPE=Release
 USE_VCPKG=1
 CMAKE_OSX_ARCHITECTURES=arm64
@@ -81,8 +81,8 @@ CMAKE_OSX_ARCHITECTURES=arm64
 
 Defaults:
 
-- macOS: uses `/private/tmp`, enables `--use_vcpkg`, builds Dawn Metal.
-- Linux: uses `/tmp`, does not enable `--use_vcpkg` by default, builds Dawn Vulkan.
+- macOS: clones ONNX Runtime into `./.deps/onnxruntime-webgpu-src`, builds under `./artifacts/onnxruntime-webgpu-build`, enables `--use_vcpkg`, builds Dawn Metal.
+- Linux: clones ONNX Runtime into `./.deps/onnxruntime-webgpu-src`, builds under `./artifacts/onnxruntime-webgpu-build`, does not enable `--use_vcpkg` by default, builds Dawn Vulkan.
 
 Windows:
 
@@ -108,9 +108,9 @@ ORT_WEBGPU_PLUGIN=<path to onnxruntime_providers_webgpu library>
 Example macOS values:
 
 ```bash
-export ORT_ROOT=/private/tmp/onnxruntime-webgpu-build/Release
-export ORT_SOURCE_ROOT=/private/tmp/onnxruntime-webgpu-src
-export ORT_WEBGPU_PLUGIN=/private/tmp/onnxruntime-webgpu-build/Release/libonnxruntime_providers_webgpu.dylib
+export ORT_ROOT=$PWD/artifacts/onnxruntime-webgpu-build/Release
+export ORT_SOURCE_ROOT=$PWD/.deps/onnxruntime-webgpu-src
+export ORT_WEBGPU_PLUGIN=$PWD/artifacts/onnxruntime-webgpu-build/Release/libonnxruntime_providers_webgpu.dylib
 ```
 
 ## Build The Benchmark
@@ -192,7 +192,7 @@ WAV to WAV inference:
   --model /path/to/pc_nsf_hifigan.onnx \
   --provider webgpu \
   --input-wav /path/to/input.wav \
-  --output-wav /path/to/output.wav \
+  --output-wav artifacts/output.wav \
   --allow-cpu-fallback
 ```
 
@@ -203,7 +203,7 @@ Quick smoke test using a voiced segment:
   --model /path/to/pc_nsf_hifigan.onnx \
   --provider webgpu \
   --input-wav /path/to/input.wav \
-  --output-wav /path/to/output.wav \
+  --output-wav artifacts/output-smoke.wav \
   --start-frame 256 \
   --max-frames 128 \
   --allow-cpu-fallback
@@ -300,7 +300,7 @@ mel_min=-9.05679 mel_max=1.06704 mel_mean=-4.44112
 f0_min=144.599 f0_max=263.861 f0_mean=224.544
 output_shape=1 1 65536
 latency_ms mean=164.239
-wrote_wav=/private/tmp/ort_webgpu_out_webgpu_fixed_voiced.wav sample_rate=44100 samples=65536
+wrote_wav=artifacts/ort_webgpu_out_webgpu_fixed_voiced.wav sample_rate=44100 samples=65536
 ```
 
 For reference, the matching PyTorch checkpoint benchmark in the parent repository measured:
