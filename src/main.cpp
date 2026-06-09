@@ -38,10 +38,12 @@ struct Args {
   fs::path model_path = "pc_nsf_hifigan.onnx";
   fs::path input_wav;
   fs::path output_wav;
+  fs::path profile_path;
   std::string provider = "webgpu";
   fs::path plugin_path;
   std::string dawn_backend;
   std::string power_preference = "high-performance";
+  std::vector<int> sweep_frames;
   int frames = 256;
   int start_frame = 0;
   int max_frames = 0;
@@ -59,11 +61,13 @@ void PrintUsage(const char* argv0) {
       << "  --model PATH                 ONNX model path (default: pc_nsf_hifigan.onnx)\n"
       << "  --input-wav PATH             input WAV; when set, mel/f0 are extracted from audio\n"
       << "  --output-wav PATH            output WAV path for audio inference\n"
+      << "  --profile PATH               enable ORT profiling with this file prefix\n"
       << "  --provider NAME              webgpu or cpu (default: webgpu)\n"
       << "  --plugin PATH                WebGPU EP plugin library path\n"
       << "  --dawn-backend NAME          auto, d3d12, or vulkan (default: auto)\n"
       << "  --power-preference NAME      high-performance or low-power (default: high-performance)\n"
       << "  --frames N                   mel/f0 frame count (default: 256)\n"
+      << "  --sweep-frames LIST          comma-separated synthetic frame counts to test in one session\n"
       << "  --start-frame N              first extracted WAV feature frame to run (default: 0)\n"
       << "  --max-frames N               truncate extracted WAV features to N frames (default: no limit)\n"
       << "  --sample-rate N              output sample rate for WAV mode (default: 44100)\n"
@@ -78,6 +82,24 @@ std::string Lowercase(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
+}
+
+std::vector<int> ParseFrameList(const std::string& value) {
+  std::vector<int> frames;
+  size_t begin = 0;
+  while (begin <= value.size()) {
+    const size_t end = value.find(',', begin);
+    const std::string item = value.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (item.empty()) {
+      throw std::runtime_error("empty item in --sweep-frames");
+    }
+    frames.push_back(std::stoi(item));
+    if (end == std::string::npos) {
+      break;
+    }
+    begin = end + 1;
+  }
+  return frames;
 }
 
 Args ParseArgs(int argc, char** argv) {
@@ -97,6 +119,8 @@ Args ParseArgs(int argc, char** argv) {
       args.input_wav = need_value("--input-wav");
     } else if (key == "--output-wav") {
       args.output_wav = need_value("--output-wav");
+    } else if (key == "--profile") {
+      args.profile_path = need_value("--profile");
     } else if (key == "--provider") {
       args.provider = need_value("--provider");
     } else if (key == "--plugin") {
@@ -107,6 +131,8 @@ Args ParseArgs(int argc, char** argv) {
       args.power_preference = need_value("--power-preference");
     } else if (key == "--frames") {
       args.frames = std::stoi(need_value("--frames"));
+    } else if (key == "--sweep-frames") {
+      args.sweep_frames = ParseFrameList(need_value("--sweep-frames"));
     } else if (key == "--start-frame") {
       args.start_frame = std::stoi(need_value("--start-frame"));
     } else if (key == "--max-frames") {
@@ -152,6 +178,17 @@ Args ParseArgs(int argc, char** argv) {
   }
   if (!args.output_wav.empty() && args.input_wav.empty()) {
     throw std::runtime_error("--output-wav requires --input-wav");
+  }
+  for (int frames : args.sweep_frames) {
+    if (frames <= 0) {
+      throw std::runtime_error("--sweep-frames values must be positive");
+    }
+  }
+  if (!args.sweep_frames.empty() && !args.input_wav.empty()) {
+    throw std::runtime_error("--sweep-frames only supports synthetic input");
+  }
+  if (!args.sweep_frames.empty() && !args.output_wav.empty()) {
+    throw std::runtime_error("--sweep-frames cannot be combined with --output-wav");
   }
   return args;
 }
@@ -362,6 +399,10 @@ Ort::SessionOptions MakeSessionOptions(Ort::Env& env, const Args& args, const fs
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   options.SetIntraOpNumThreads(args.threads);
   options.SetInterOpNumThreads(args.threads);
+  if (!args.profile_path.empty()) {
+    const std::basic_string<ORTCHAR_T> profile_path = ToOrtPath(args.profile_path);
+    options.EnableProfiling(profile_path.c_str());
+  }
 
   if (args.provider != "cpu" && args.disable_cpu_fallback) {
     options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
@@ -408,7 +449,13 @@ int main(int argc, char** argv) {
               << " model=" << NativePathString(args.model_path)
               << " input_wav=" << (args.input_wav.empty() ? "" : NativePathString(args.input_wav))
               << " output_wav=" << (args.output_wav.empty() ? "" : NativePathString(args.output_wav))
+              << " profile=" << (args.profile_path.empty() ? "" : NativePathString(args.profile_path))
               << " frames=" << input_tensors.frames
+              << " sweep_frames=";
+    for (int frames : args.sweep_frames) {
+      std::cout << frames << ',';
+    }
+    std::cout
               << " start_frame=" << args.start_frame
               << " max_frames=" << args.max_frames
               << " warmup=" << (args.input_wav.empty() ? args.warmup : 0)
@@ -444,84 +491,101 @@ int main(int argc, char** argv) {
 
     auto mel_info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
     const MelLayout mel_layout = DetectMelLayout(mel_info.GetShape());
-    std::vector<float> mel_time_major;
-    const float* mel_data = input_tensors.mel.data();
-    std::array<int64_t, 3> mel_shape{1, 128, input_tensors.frames};
-    if (mel_layout == MelLayout::TimeMajor) {
-      mel_time_major = ToTimeMajorMel(input_tensors.mel, input_tensors.frames);
-      mel_data = mel_time_major.data();
-      mel_shape = {1, input_tensors.frames, 128};
-    }
-    std::array<int64_t, 2> f0_shape{1, input_tensors.frames};
-
     Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value mel_value = Ort::Value::CreateTensor<float>(memory_info, const_cast<float*>(mel_data), input_tensors.mel.size(),
-                                                           mel_shape.data(), mel_shape.size());
-    Ort::Value f0_value = Ort::Value::CreateTensor<float>(memory_info, input_tensors.f0.data(), input_tensors.f0.size(),
-                                                          f0_shape.data(), f0_shape.size());
-    std::vector<Ort::Value> inputs;
-    inputs.emplace_back(std::move(mel_value));
-    inputs.emplace_back(std::move(f0_value));
-
     const char* input_names[] = {"mel", "f0"};
     auto output_name = session.GetOutputNameAllocated(0, allocator);
     const char* output_names[] = {output_name.get()};
 
-    auto run_once = [&]() {
-      return session.Run(Ort::RunOptions{nullptr},
-                         input_names, inputs.data(), inputs.size(),
-                         output_names, 1);
+    auto run_case = [&](const InputTensors& tensors, bool write_output_wav) {
+      std::vector<float> mel_time_major;
+      const float* mel_data = tensors.mel.data();
+      std::array<int64_t, 3> mel_shape{1, 128, tensors.frames};
+      if (mel_layout == MelLayout::TimeMajor) {
+        mel_time_major = ToTimeMajorMel(tensors.mel, tensors.frames);
+        mel_data = mel_time_major.data();
+        mel_shape = {1, tensors.frames, 128};
+      }
+      std::array<int64_t, 2> f0_shape{1, tensors.frames};
+
+      Ort::Value mel_value = Ort::Value::CreateTensor<float>(
+          memory_info, const_cast<float*>(mel_data), tensors.mel.size(), mel_shape.data(), mel_shape.size());
+      Ort::Value f0_value = Ort::Value::CreateTensor<float>(
+          memory_info, const_cast<float*>(tensors.f0.data()), tensors.f0.size(), f0_shape.data(), f0_shape.size());
+      std::vector<Ort::Value> inputs;
+      inputs.emplace_back(std::move(mel_value));
+      inputs.emplace_back(std::move(f0_value));
+
+      auto run_once = [&]() {
+        return session.Run(Ort::RunOptions{nullptr},
+                           input_names, inputs.data(), inputs.size(),
+                           output_names, 1);
+      };
+
+      std::vector<double> timings;
+      timings.reserve(args.input_wav.empty() ? args.runs : 1);
+      Ort::Value last_output{nullptr};
+
+      if (args.input_wav.empty()) {
+        for (int i = 0; i < args.warmup; ++i) {
+          auto outputs = run_once();
+          (void)outputs;
+        }
+      }
+
+      const int run_count = args.input_wav.empty() ? args.runs : 1;
+      for (int i = 0; i < run_count; ++i) {
+        const auto begin = std::chrono::steady_clock::now();
+        auto outputs = run_once();
+        const auto end = std::chrono::steady_clock::now();
+        timings.push_back(std::chrono::duration<double, std::milli>(end - begin).count());
+        last_output = std::move(outputs[0]);
+      }
+
+      auto out_info = last_output.GetTensorTypeAndShapeInfo();
+      auto out_shape = out_info.GetShape();
+      const float* out = last_output.GetTensorData<float>();
+      const size_t out_count = out_info.GetElementCount();
+      float min_v = out[0];
+      float max_v = out[0];
+      double mean = 0.0;
+      for (size_t i = 0; i < out_count; ++i) {
+        min_v = std::min(min_v, out[i]);
+        max_v = std::max(max_v, out[i]);
+        mean += out[i];
+      }
+      mean /= static_cast<double>(out_count);
+
+      std::cout << "case_frames=" << tensors.frames << '\n';
+      std::cout << "output_shape=";
+      for (auto dim : out_shape) {
+        std::cout << dim << ' ';
+      }
+      std::cout << " output_min=" << min_v
+                << " output_max=" << max_v
+                << " output_mean=" << mean << '\n';
+      PrintStats(timings, tensors.frames);
+
+      if (write_output_wav && !args.output_wav.empty()) {
+        std::vector<float> audio(out, out + out_count);
+        WriteWavMono16(args.output_wav, args.sample_rate, audio);
+        std::cout << "wrote_wav=" << NativePathString(args.output_wav)
+                  << " sample_rate=" << args.sample_rate
+                  << " samples=" << audio.size() << '\n';
+      }
     };
 
-    std::vector<double> timings;
-    timings.reserve(args.input_wav.empty() ? args.runs : 1);
-    Ort::Value last_output{nullptr};
-
-    if (args.input_wav.empty()) {
-      for (int i = 0; i < args.warmup; ++i) {
-        auto outputs = run_once();
-        (void)outputs;
+    if (args.sweep_frames.empty()) {
+      run_case(input_tensors, true);
+    } else {
+      for (int frames : args.sweep_frames) {
+        InputTensors synthetic = MakeSyntheticInputs(frames);
+        run_case(synthetic, false);
       }
     }
 
-    const int run_count = args.input_wav.empty() ? args.runs : 1;
-    for (int i = 0; i < run_count; ++i) {
-      const auto begin = std::chrono::steady_clock::now();
-      auto outputs = run_once();
-      const auto end = std::chrono::steady_clock::now();
-      timings.push_back(std::chrono::duration<double, std::milli>(end - begin).count());
-      last_output = std::move(outputs[0]);
-    }
-
-    auto out_info = last_output.GetTensorTypeAndShapeInfo();
-    auto out_shape = out_info.GetShape();
-    const float* out = last_output.GetTensorData<float>();
-    const size_t out_count = out_info.GetElementCount();
-    float min_v = out[0];
-    float max_v = out[0];
-    double mean = 0.0;
-    for (size_t i = 0; i < out_count; ++i) {
-      min_v = std::min(min_v, out[i]);
-      max_v = std::max(max_v, out[i]);
-      mean += out[i];
-    }
-    mean /= static_cast<double>(out_count);
-
-    std::cout << "output_shape=";
-    for (auto dim : out_shape) {
-      std::cout << dim << ' ';
-    }
-    std::cout << " output_min=" << min_v
-              << " output_max=" << max_v
-              << " output_mean=" << mean << '\n';
-    PrintStats(timings, input_tensors.frames);
-
-    if (!args.output_wav.empty()) {
-      std::vector<float> audio(out, out + out_count);
-      WriteWavMono16(args.output_wav, args.sample_rate, audio);
-      std::cout << "wrote_wav=" << NativePathString(args.output_wav)
-                << " sample_rate=" << args.sample_rate
-                << " samples=" << audio.size() << '\n';
+    if (!args.profile_path.empty()) {
+      auto profile_file = session.EndProfilingAllocated(allocator);
+      std::cout << "profile_file=" << profile_file.get() << '\n';
     }
 
     return 0;
