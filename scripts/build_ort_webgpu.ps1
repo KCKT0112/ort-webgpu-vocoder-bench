@@ -5,6 +5,7 @@ param(
   [ValidateSet("d3d12", "vulkan")]
   [string]$DawnBackend = "d3d12",
   [string]$CMakeGenerator = "Ninja",
+  [string]$MsvcToolset = "",
   [string]$BenchmarkBuildDir = "",
   [switch]$SkipBenchmark,
   [switch]$NoVcpkg
@@ -89,6 +90,13 @@ $cl = Get-Command cl.exe -ErrorAction Stop
 $env:CC = $cl.Source
 $env:CXX = $cl.Source
 
+if ([string]::IsNullOrWhiteSpace($MsvcToolset) -and $env:VCToolsInstallDir) {
+  $msvcVersion = Split-Path -Leaf ($env:VCToolsInstallDir.TrimEnd('\'))
+  if ($msvcVersion -match "^(\d+\.\d+)") {
+    $MsvcToolset = $matches[1]
+  }
+}
+
 $vsNinja = Join-Path $env:VSINSTALLDIR "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
 if (Test-Path $vsNinja) {
   $env:CMAKE_MAKE_PROGRAM = $vsNinja
@@ -159,6 +167,9 @@ if ($env:CMAKE_MAKE_PROGRAM) {
   $cmakeDefines += "CMAKE_MAKE_PROGRAM=$env:CMAKE_MAKE_PROGRAM"
 }
 
+$cmakeDefines += "CMAKE_C_COMPILER=$env:CC"
+$cmakeDefines += "CMAKE_CXX_COMPILER=$env:CXX"
+
 $buildArgs = @(
   "$OrtSrc\tools\ci_build\build.py",
   "--build_dir", $OrtBuildDir,
@@ -173,6 +184,11 @@ $buildArgs = @(
   "--skip_tests",
   "--cmake_generator", $CMakeGenerator
 )
+
+if (-not [string]::IsNullOrWhiteSpace($MsvcToolset)) {
+  $buildArgs += "--msvc_toolset"
+  $buildArgs += $MsvcToolset
+}
 
 if (-not $NoVcpkg) {
   $buildArgs += "--use_vcpkg"

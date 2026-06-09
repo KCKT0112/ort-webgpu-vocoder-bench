@@ -97,10 +97,16 @@ Windows defaults to Dawn D3D12. To build Vulkan instead:
 .\scripts\build_ort_webgpu.ps1 -DawnBackend vulkan
 ```
 
-The Windows helper auto-loads the Visual Studio C++ build environment when `cl.exe` is not already available, defaults to the `Ninja` CMake generator, and builds the benchmark after ORT succeeds. To only build ORT, pass `-SkipBenchmark`. To override the generator:
+The Windows helper auto-loads the Visual Studio C++ build environment when `cl.exe` is not already available, defaults to the `Ninja` CMake generator, infers the MSVC toolset version for vcpkg, and builds the benchmark after ORT succeeds. To only build ORT, pass `-SkipBenchmark`. To override the generator:
 
 ```powershell
 .\scripts\build_ort_webgpu.ps1 -CMakeGenerator "Visual Studio 17 2022"
+```
+
+To override the MSVC toolset passed to ONNX Runtime/vcpkg:
+
+```powershell
+.\scripts\build_ort_webgpu.ps1 -MsvcToolset "14.50"
 ```
 
 After build, set these variables or pass equivalent CMake options:
@@ -336,6 +342,7 @@ PyTorch ckpt MPS, remove weight norm: mean=125.904 ms, RTF=0.042, 23.607x realti
 `vcpkg was unable to detect the active compiler's information`:
 
 - Re-run `scripts/build_ort_webgpu.ps1`; the Windows helper loads the MSVC environment, pins `CC`/`CXX` to `cl.exe`, uses Visual Studio's Ninja when available, and removes stale `vcpkg/buildtrees/detect_compiler` cache.
+- If multiple MSVC toolsets are installed, pass `-MsvcToolset "14.xx"` to match the selected Visual Studio toolchain.
 
 Plugin registration fails:
 
