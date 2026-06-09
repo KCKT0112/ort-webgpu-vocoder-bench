@@ -65,6 +65,40 @@ function Import-VsDevEnvironment {
 
 Import-VsDevEnvironment
 
+function Clear-CMakeGeneratorCacheIfNeeded {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$BuildDir,
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedGenerator
+  )
+
+  $cachePath = Join-Path $BuildDir "CMakeCache.txt"
+  if (-not (Test-Path $cachePath)) {
+    return
+  }
+
+  $generatorLine = Get-Content -Path $cachePath | Where-Object { $_ -like "CMAKE_GENERATOR:INTERNAL=*" } | Select-Object -First 1
+  if (-not $generatorLine) {
+    return
+  }
+
+  $actualGenerator = $generatorLine.Substring("CMAKE_GENERATOR:INTERNAL=".Length)
+  if ($actualGenerator -eq $ExpectedGenerator) {
+    return
+  }
+
+  Write-Host "CMake generator changed from '$actualGenerator' to '$ExpectedGenerator'; removing stale CMake configure cache."
+  Remove-Item -LiteralPath $cachePath -Force
+
+  $cmakeFiles = Join-Path $BuildDir "CMakeFiles"
+  if (Test-Path $cmakeFiles) {
+    Remove-Item -LiteralPath $cmakeFiles -Recurse -Force
+  }
+}
+
+Clear-CMakeGeneratorCacheIfNeeded -BuildDir (Join-Path $OrtBuildDir $Config) -ExpectedGenerator $CMakeGenerator
+
 if (-not (Test-Path (Join-Path $OrtSrc ".git"))) {
   git clone --depth 1 https://github.com/microsoft/onnxruntime.git $OrtSrc
 } else {

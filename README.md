@@ -328,6 +328,11 @@ PyTorch ckpt MPS, remove weight norm: mean=125.904 ms, RTF=0.042, 23.607x realti
 
 - The model is not fully supported by WebGPU EP. Add `--allow-cpu-fallback` to benchmark mixed execution.
 
+`Does not match the generator used previously`:
+
+- Re-run `scripts/build_ort_webgpu.ps1`; the Windows helper removes stale CMake configure cache when its generator changes.
+- If you manually changed build directories, remove that directory's `CMakeCache.txt` and `CMakeFiles/`.
+
 Plugin registration fails:
 
 - Ensure the WebGPU plugin library and its runtime dependencies are next to the executable or pass `--plugin`.
