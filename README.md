@@ -97,7 +97,7 @@ Windows defaults to Dawn D3D12. To build Vulkan instead:
 .\scripts\build_ort_webgpu.ps1 -DawnBackend vulkan
 ```
 
-The Windows helper auto-loads the Visual Studio C++ build environment when `cl.exe` is not already available, and defaults to the `Ninja` CMake generator. To override the generator:
+The Windows helper auto-loads the Visual Studio C++ build environment when `cl.exe` is not already available, defaults to the `Ninja` CMake generator, and builds the benchmark after ORT succeeds. To only build ORT, pass `-SkipBenchmark`. To override the generator:
 
 ```powershell
 .\scripts\build_ort_webgpu.ps1 -CMakeGenerator "Visual Studio 17 2022"

@@ -5,6 +5,8 @@ param(
   [ValidateSet("d3d12", "vulkan")]
   [string]$DawnBackend = "d3d12",
   [string]$CMakeGenerator = "Ninja",
+  [string]$BenchmarkBuildDir = "",
+  [switch]$SkipBenchmark,
   [switch]$NoVcpkg
 )
 
@@ -20,6 +22,10 @@ if ([string]::IsNullOrWhiteSpace($OrtSrc)) {
 
 if ([string]::IsNullOrWhiteSpace($OrtBuildDir)) {
   $OrtBuildDir = Join-Path $ProjectDir "artifacts\onnxruntime-webgpu-build"
+}
+
+if ([string]::IsNullOrWhiteSpace($BenchmarkBuildDir)) {
+  $BenchmarkBuildDir = Join-Path $ProjectDir "build\windows-release"
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OrtSrc), $OrtBuildDir | Out-Null
@@ -144,21 +150,39 @@ $buildArgs += $cmakeDefines
 python $buildArgs
 
 $ortOut = Join-Path $OrtBuildDir $Config
+$webgpuPlugin = Join-Path $ortOut "onnxruntime_providers_webgpu.dll"
+
+if (-not $SkipBenchmark) {
+  Clear-CMakeGeneratorCacheIfNeeded -BuildDir $BenchmarkBuildDir -ExpectedGenerator $CMakeGenerator
+
+  $benchmarkConfigureArgs = @(
+    "-S", $ProjectDir,
+    "-B", $BenchmarkBuildDir,
+    "-G", $CMakeGenerator,
+    "-DORT_ROOT=$ortOut",
+    "-DORT_SOURCE_ROOT=$OrtSrc",
+    "-DORT_WEBGPU_PLUGIN=$webgpuPlugin"
+  )
+
+  cmake $benchmarkConfigureArgs
+  cmake --build $BenchmarkBuildDir --config $Config
+}
+
 Write-Host ""
 Write-Host "ORT build output: $ortOut"
 Write-Host "Use these values in CLion/CMake:"
 Write-Host "  ORT_ROOT=$ortOut"
 Write-Host "  ORT_SOURCE_ROOT=$OrtSrc"
-Write-Host "  ORT_WEBGPU_PLUGIN=$(Join-Path $ortOut 'onnxruntime_providers_webgpu.dll')"
+Write-Host "  ORT_WEBGPU_PLUGIN=$webgpuPlugin"
 Write-Host ""
 Write-Host "Benchmark build:"
-Write-Host "  cmake -S `"$ProjectDir`" -B `"$ProjectDir\build\windows-release`" -G `"$CMakeGenerator`" -DORT_ROOT=`"$ortOut`" -DORT_SOURCE_ROOT=`"$OrtSrc`""
-Write-Host "  cmake --build `"$ProjectDir\build\windows-release`" --config $Config"
+Write-Host "  cmake -S `"$ProjectDir`" -B `"$BenchmarkBuildDir`" -G `"$CMakeGenerator`" -DORT_ROOT=`"$ortOut`" -DORT_SOURCE_ROOT=`"$OrtSrc`" -DORT_WEBGPU_PLUGIN=`"$webgpuPlugin`""
+Write-Host "  cmake --build `"$BenchmarkBuildDir`" --config $Config"
 Write-Host ""
 Write-Host "Example run:"
 if ($CMakeGenerator -like "Visual Studio*") {
-  $benchExe = Join-Path $ProjectDir "build\windows-release\$Config\ort_webgpu_bench.exe"
+  $benchExe = Join-Path $BenchmarkBuildDir "$Config\ort_webgpu_bench.exe"
 } else {
-  $benchExe = Join-Path $ProjectDir "build\windows-release\ort_webgpu_bench.exe"
+  $benchExe = Join-Path $BenchmarkBuildDir "ort_webgpu_bench.exe"
 }
 Write-Host "  `"$benchExe`" --model `"$RepoRoot\pc_nsf_hifigan.onnx`" --provider webgpu --dawn-backend $DawnBackend --allow-cpu-fallback"
