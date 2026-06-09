@@ -97,7 +97,7 @@ Windows defaults to Dawn D3D12. To build Vulkan instead:
 .\scripts\build_ort_webgpu.ps1 -DawnBackend vulkan
 ```
 
-The Windows helper auto-loads the Visual Studio C++ build environment when `cl.exe` is not already available, defaults to the `Ninja` CMake generator, infers the MSVC toolset version for vcpkg, and builds the benchmark after ORT succeeds. To only build ORT, pass `-SkipBenchmark`. To override the generator:
+The Windows helper auto-loads the Visual Studio C++ build environment when `cl.exe` is not already available, defaults to the `Ninja` CMake generator, infers the MSVC toolset version for vcpkg, prefers Visual Studio's bundled vcpkg when available, and builds the benchmark after ORT succeeds. To only build ORT, pass `-SkipBenchmark`. To override the generator:
 
 ```powershell
 .\scripts\build_ort_webgpu.ps1 -CMakeGenerator "Visual Studio 17 2022"
@@ -110,6 +110,12 @@ To override the MSVC toolset passed to ONNX Runtime/vcpkg:
 ```
 
 The ORT build step retries transient failures, such as interrupted Git downloads, up to three times by default. Override with `-OrtBuildRetries N`.
+
+To force a specific vcpkg root:
+
+```powershell
+.\scripts\build_ort_webgpu.ps1 -VcpkgRoot "C:\path\to\vcpkg"
+```
 
 After build, set these variables or pass equivalent CMake options:
 

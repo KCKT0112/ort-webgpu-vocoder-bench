@@ -6,6 +6,7 @@ param(
   [string]$DawnBackend = "d3d12",
   [string]$CMakeGenerator = "Ninja",
   [string]$MsvcToolset = "",
+  [string]$VcpkgRoot = "",
   [string]$BenchmarkBuildDir = "",
   [int]$OrtBuildRetries = 3,
   [switch]$SkipBenchmark,
@@ -104,6 +105,29 @@ if (Test-Path $vsNinja) {
   $env:PATH = "$(Split-Path -Parent $vsNinja);$env:PATH"
 }
 
+if (-not $NoVcpkg) {
+  if ([string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+    $vsVcpkg = Join-Path $env:VSINSTALLDIR "VC\vcpkg"
+    if (Test-Path (Join-Path $vsVcpkg "scripts\buildsystems\vcpkg.cmake")) {
+      $VcpkgRoot = $vsVcpkg
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($VcpkgRoot)) {
+    if (-not (Test-Path (Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"))) {
+      throw "VcpkgRoot '$VcpkgRoot' does not contain scripts\buildsystems\vcpkg.cmake."
+    }
+
+    $resolvedVcpkgRoot = (Resolve-Path -LiteralPath $VcpkgRoot).Path
+    $env:VCPKG_INSTALLATION_ROOT = $resolvedVcpkgRoot
+    $env:VCPKG_ROOT = $resolvedVcpkgRoot
+    $env:VCPKG_VISUAL_STUDIO_PATH = $env:VSINSTALLDIR.TrimEnd('\')
+
+    $vcpkgExeDir = Split-Path -Parent (Join-Path $resolvedVcpkgRoot "vcpkg.exe")
+    $env:PATH = "$vcpkgExeDir;$env:PATH"
+  }
+}
+
 function Clear-CMakeGeneratorCacheIfNeeded {
   param(
     [Parameter(Mandatory = $true)]
@@ -157,12 +181,57 @@ function Clear-OrtTransientBuildState {
 
 Clear-OrtTransientBuildState
 
+function Patch-OrtBuildForVcpkgEnvironment {
+  $buildPy = Join-Path $OrtSrc "tools\ci_build\build.py"
+  if (-not (Test-Path $buildPy)) {
+    return
+  }
+
+  $old = '            vcpkg_keep_env_vars = ["TRT_UPLOAD_AUTH_TOKEN"]'
+  $new = @'
+            vcpkg_keep_env_vars = [
+                "TRT_UPLOAD_AUTH_TOKEN",
+                "PATH",
+                "CC",
+                "CXX",
+                "CMAKE_MAKE_PROGRAM",
+                "VCPKG_INSTALLATION_ROOT",
+                "VCPKG_ROOT",
+                "VCPKG_VISUAL_STUDIO_PATH",
+                "VSINSTALLDIR",
+                "VCINSTALLDIR",
+                "VCToolsInstallDir",
+                "VCToolsRedistDir",
+                "WindowsSdkDir",
+                "WindowsSDKLibVersion",
+                "WindowsSDKVersion",
+                "INCLUDE",
+                "LIB",
+                "LIBPATH",
+            ]
+'@
+
+  $text = Get-Content -Path $buildPy -Raw
+  if ($text.Contains($new.TrimEnd())) {
+    return
+  }
+
+  if (-not $text.Contains($old)) {
+    Write-Warning "Could not patch ORT build.py vcpkg environment keep-list; pattern not found."
+    return
+  }
+
+  Set-Content -Path $buildPy -Value ($text.Replace($old, $new.TrimEnd())) -NoNewline
+}
+
 if (-not (Test-Path (Join-Path $OrtSrc ".git"))) {
   Invoke-Checked git clone --depth 1 https://github.com/microsoft/onnxruntime.git $OrtSrc
 } else {
   Invoke-Checked git -C $OrtSrc fetch --depth 1 origin main
   Invoke-Checked git -C $OrtSrc checkout FETCH_HEAD
 }
+
+Patch-OrtBuildForVcpkgEnvironment
 
 $cmakeDefines = @(
   "onnxruntime_BUILD_UNIT_TESTS=OFF",
