@@ -8,4 +8,7 @@ struct VocoderFeatures {
   std::vector<float> f0;   // [frames]
 };
 
-VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio, int sample_rate);
+VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio,
+                                       int sample_rate,
+                                       int start_frame = 0,
+                                       int max_frames = 0);

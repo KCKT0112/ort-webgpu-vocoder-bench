@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -18,12 +19,26 @@ constexpr float kF0Min = 65.0f;
 constexpr float kF0Max = 1100.0f;
 constexpr float kPi = 3.14159265358979323846f;
 
-float HzToMel(float hz) {
-  return 2595.0f * std::log10(1.0f + hz / 700.0f);
+float HzToMelSlaney(float hz) {
+  constexpr float f_sp = 200.0f / 3.0f;
+  constexpr float min_log_hz = 1000.0f;
+  constexpr float min_log_mel = min_log_hz / f_sp;
+  constexpr float logstep = 0.06875177742094912f;  // ln(6.4) / 27
+  if (hz < min_log_hz) {
+    return hz / f_sp;
+  }
+  return min_log_mel + std::log(hz / min_log_hz) / logstep;
 }
 
-float MelToHz(float mel) {
-  return 700.0f * (std::pow(10.0f, mel / 2595.0f) - 1.0f);
+float MelToHzSlaney(float mel) {
+  constexpr float f_sp = 200.0f / 3.0f;
+  constexpr float min_log_hz = 1000.0f;
+  constexpr float min_log_mel = min_log_hz / f_sp;
+  constexpr float logstep = 0.06875177742094912f;  // ln(6.4) / 27
+  if (mel < min_log_mel) {
+    return mel * f_sp;
+  }
+  return min_log_hz * std::exp(logstep * (mel - min_log_mel));
 }
 
 int ReflectIndex(int index, int size) {
@@ -61,29 +76,27 @@ std::vector<float> CreateMelFilterbank() {
   const int freq_bins = kFftSize / 2 + 1;
   std::vector<float> filters(static_cast<size_t>(kNumMels * freq_bins), 0.0f);
 
-  const float mel_min = HzToMel(kFMin);
-  const float mel_max = HzToMel(kFMax);
+  const float mel_min = HzToMelSlaney(kFMin);
+  const float mel_max = HzToMelSlaney(kFMax);
   std::vector<float> hz_points(kNumMels + 2);
-  std::vector<int> bins(kNumMels + 2);
   for (int i = 0; i < kNumMels + 2; ++i) {
     const float mel = mel_min + (mel_max - mel_min) * i / (kNumMels + 1);
-    hz_points[static_cast<size_t>(i)] = MelToHz(mel);
-    bins[static_cast<size_t>(i)] = static_cast<int>(std::floor((kFftSize + 1) * hz_points[static_cast<size_t>(i)] / kSampleRate));
-    bins[static_cast<size_t>(i)] = std::clamp(bins[static_cast<size_t>(i)], 0, freq_bins - 1);
+    hz_points[static_cast<size_t>(i)] = MelToHzSlaney(mel);
   }
 
-  for (int m = 1; m <= kNumMels; ++m) {
-    const int left = bins[static_cast<size_t>(m - 1)];
-    const int center = bins[static_cast<size_t>(m)];
-    const int right = bins[static_cast<size_t>(m + 1)];
+  for (int m = 0; m < kNumMels; ++m) {
+    const float left = hz_points[static_cast<size_t>(m)];
+    const float center = hz_points[static_cast<size_t>(m + 1)];
+    const float right = hz_points[static_cast<size_t>(m + 2)];
     if (center <= left || right <= center) {
       continue;
     }
-    for (int k = left; k < center; ++k) {
-      filters[static_cast<size_t>((m - 1) * freq_bins + k)] = static_cast<float>(k - left) / (center - left);
-    }
-    for (int k = center; k < right; ++k) {
-      filters[static_cast<size_t>((m - 1) * freq_bins + k)] = static_cast<float>(right - k) / (right - center);
+    const float enorm = 2.0f / (right - left);
+    for (int k = 0; k < freq_bins; ++k) {
+      const float fft_hz = static_cast<float>(kSampleRate) * k / kFftSize;
+      const float lower = (fft_hz - left) / (center - left);
+      const float upper = (right - fft_hz) / (right - center);
+      filters[static_cast<size_t>(m * freq_bins + k)] = std::max(0.0f, std::min(lower, upper)) * enorm;
     }
   }
 
@@ -147,42 +160,112 @@ float EstimateF0ForFrame(const std::vector<float>& audio, int center) {
     return 0.0f;
   }
 
-  int best_lag = 0;
-  double best_corr = 0.0;
-  for (int lag = min_lag; lag <= max_lag; ++lag) {
-    double corr = 0.0;
-    double e0 = 0.0;
-    double e1 = 0.0;
-    const int count = kWinSize - lag;
-    for (int i = 0; i < count; ++i) {
+  std::vector<double> diff(static_cast<size_t>(max_lag + 1), 0.0);
+  for (int lag = 1; lag <= max_lag; ++lag) {
+    double sum = 0.0;
+    for (int i = 0; i < kWinSize - lag; ++i) {
       const float a = audio[static_cast<size_t>(ReflectIndex(start + i, static_cast<int>(audio.size())))];
       const float b = audio[static_cast<size_t>(ReflectIndex(start + i + lag, static_cast<int>(audio.size())))];
-      corr += a * b;
-      e0 += a * a;
-      e1 += b * b;
+      const double d = static_cast<double>(a) - b;
+      sum += d * d;
     }
-    const double denom = std::sqrt(e0 * e1) + 1e-9;
-    const double norm_corr = corr / denom;
-    if (norm_corr > best_corr) {
-      best_corr = norm_corr;
+    diff[static_cast<size_t>(lag)] = sum;
+  }
+
+  std::vector<double> cmndf(static_cast<size_t>(max_lag + 1), 1.0);
+  double running_sum = 0.0;
+  for (int lag = 1; lag <= max_lag; ++lag) {
+    running_sum += diff[static_cast<size_t>(lag)];
+    cmndf[static_cast<size_t>(lag)] = diff[static_cast<size_t>(lag)] * lag / (running_sum + 1e-12);
+  }
+
+  constexpr double threshold = 0.12;
+  int best_lag = 0;
+  for (int lag = min_lag; lag <= max_lag; ++lag) {
+    if (cmndf[static_cast<size_t>(lag)] < threshold) {
+      while (lag + 1 <= max_lag &&
+             cmndf[static_cast<size_t>(lag + 1)] < cmndf[static_cast<size_t>(lag)]) {
+        ++lag;
+      }
       best_lag = lag;
+      break;
     }
   }
 
-  if (best_lag == 0 || best_corr < 0.25) {
+  if (best_lag == 0) {
+    double best_value = std::numeric_limits<double>::infinity();
+    for (int lag = min_lag; lag <= max_lag; ++lag) {
+      const double value = cmndf[static_cast<size_t>(lag)];
+      if (value < best_value) {
+        best_value = value;
+        best_lag = lag;
+      }
+    }
+    if (best_value > 0.35) {
+      return 0.0f;
+    }
+  }
+
+  double refined_lag = best_lag;
+  if (best_lag > min_lag && best_lag < max_lag) {
+    const double left = cmndf[static_cast<size_t>(best_lag - 1)];
+    const double mid = cmndf[static_cast<size_t>(best_lag)];
+    const double right = cmndf[static_cast<size_t>(best_lag + 1)];
+    const double denom = left - 2.0 * mid + right;
+    if (std::abs(denom) > 1e-12) {
+      refined_lag += 0.5 * (left - right) / denom;
+    }
+  }
+  if (refined_lag <= 0.0) {
     return 0.0f;
   }
-  return static_cast<float>(kSampleRate) / best_lag;
+  return static_cast<float>(kSampleRate / refined_lag);
+}
+
+void InterpolateUnvoicedF0(std::vector<float>& f0) {
+  std::vector<int> voiced;
+  voiced.reserve(f0.size());
+  for (int i = 0; i < static_cast<int>(f0.size()); ++i) {
+    if (f0[static_cast<size_t>(i)] > 0.0f) {
+      voiced.push_back(i);
+    }
+  }
+  if (voiced.empty()) {
+    return;
+  }
+  for (int i = 0; i < voiced.front(); ++i) {
+    f0[static_cast<size_t>(i)] = f0[static_cast<size_t>(voiced.front())];
+  }
+  for (size_t k = 0; k + 1 < voiced.size(); ++k) {
+    const int left = voiced[k];
+    const int right = voiced[k + 1];
+    const float left_f0 = f0[static_cast<size_t>(left)];
+    const float right_f0 = f0[static_cast<size_t>(right)];
+    for (int i = left + 1; i < right; ++i) {
+      const float alpha = static_cast<float>(i - left) / static_cast<float>(right - left);
+      const float log_f0 = std::log2(left_f0) * (1.0f - alpha) + std::log2(right_f0) * alpha;
+      f0[static_cast<size_t>(i)] = std::exp2(log_f0);
+    }
+  }
+  for (int i = voiced.back() + 1; i < static_cast<int>(f0.size()); ++i) {
+    f0[static_cast<size_t>(i)] = f0[static_cast<size_t>(voiced.back())];
+  }
 }
 
 }  // namespace
 
-VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio, int sample_rate) {
+VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio,
+                                       int sample_rate,
+                                       int start_frame,
+                                       int max_frames) {
   if (sample_rate != kSampleRate) {
     throw std::runtime_error("ExtractVocoderFeatures expects 44100 Hz audio");
   }
   if (audio.empty()) {
     throw std::runtime_error("empty audio input");
+  }
+  if (start_frame < 0 || max_frames < 0) {
+    throw std::runtime_error("start_frame and max_frames must be non-negative");
   }
 
   const int left_pad = (kWinSize - kHopSize) / 2;
@@ -192,7 +275,12 @@ VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio, int samp
     throw std::runtime_error("audio is too short for feature extraction");
   }
 
-  const int frames = 1 + (static_cast<int>(padded.size()) - kFftSize) / kHopSize;
+  const int total_frames = 1 + (static_cast<int>(padded.size()) - kFftSize) / kHopSize;
+  if (start_frame >= total_frames) {
+    throw std::runtime_error("start frame is beyond extracted feature length");
+  }
+  const int available_frames = total_frames - start_frame;
+  const int frames = max_frames > 0 ? std::min(max_frames, available_frames) : available_frames;
   const int freq_bins = kFftSize / 2 + 1;
   const auto window = HannWindow(kWinSize);
   const auto mel_filters = CreateMelFilterbank();
@@ -205,7 +293,8 @@ VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio, int samp
   std::vector<float> frame(kFftSize, 0.0f);
   std::vector<float> magnitude;
   for (int t = 0; t < frames; ++t) {
-    const int offset = t * kHopSize;
+    const int absolute_frame = start_frame + t;
+    const int offset = absolute_frame * kHopSize;
     std::fill(frame.begin(), frame.end(), 0.0f);
     for (int i = 0; i < kWinSize; ++i) {
       frame[static_cast<size_t>(i)] = padded[static_cast<size_t>(offset + i)] * window[static_cast<size_t>(i)];
@@ -221,8 +310,10 @@ VocoderFeatures ExtractVocoderFeatures(const std::vector<float>& audio, int samp
           static_cast<float>(std::log(std::max(value, 1e-9)));
     }
 
-    features.f0[static_cast<size_t>(t)] = EstimateF0ForFrame(audio, t * kHopSize);
+    features.f0[static_cast<size_t>(t)] =
+        EstimateF0ForFrame(audio, absolute_frame * kHopSize + kHopSize / 2);
   }
 
+  InterpolateUnvoicedF0(features.f0);
   return features;
 }

@@ -196,7 +196,7 @@ WAV to WAV inference:
   --allow-cpu-fallback
 ```
 
-Quick smoke test using only the first 32 frames:
+Quick smoke test using a voiced segment:
 
 ```bash
 ./ort_webgpu_bench \
@@ -204,7 +204,8 @@ Quick smoke test using only the first 32 frames:
   --provider webgpu \
   --input-wav /path/to/input.wav \
   --output-wav /path/to/output.wav \
-  --max-frames 32 \
+  --start-frame 256 \
+  --max-frames 128 \
   --allow-cpu-fallback
 ```
 
@@ -253,12 +254,14 @@ Linux Vulkan:
 --dawn-backend auto|d3d12|vulkan
 --power-preference high-performance|low-power
 --frames N
+--start-frame N
 --max-frames N
 --sample-rate N
 --warmup N
 --runs N
 --threads N
 --allow-cpu-fallback
+--print-feature-stats
 ```
 
 `--plugin` defaults to the platform library name in the executable directory:
@@ -274,10 +277,10 @@ The WAV path is intentionally dependency-free:
 - Input WAV is converted to mono.
 - PCM 8/16/24/32-bit and 32-bit IEEE float WAV are supported.
 - Non-44.1 kHz input is linearly resampled to 44.1 kHz.
-- Mel uses 128 bins, `n_fft=2048`, `win=2048`, `hop=512`, `fmin=40`, `fmax=16000`, reflect padding, and natural-log compression.
-- F0 is estimated with a lightweight autocorrelation method.
+- Mel uses 128 bins, `n_fft=2048`, `win=2048`, `hop=512`, `fmin=40`, `fmax=16000`, reflect padding, librosa/Slaney mel normalization, and natural-log compression.
+- F0 is estimated with a lightweight YIN-style CMNDF estimator and interpolated across unvoiced frames.
 
-The built-in F0 estimator is a practical baseline for standalone C++ inference. It is not a replacement for higher-quality pitch extractors such as RMVPE, parselmouth, or WORLD harvest.
+The built-in F0 estimator is a practical baseline for standalone C++ inference. It is not a replacement for higher-quality pitch extractors such as RMVPE, parselmouth, or WORLD harvest. If a short smoke test sounds silent, check that the selected region is not leading silence; `--start-frame` skips extracted feature frames and `--print-feature-stats` prints mel/F0 ranges.
 
 ## Current pc_nsf_hifigan Result
 
@@ -290,12 +293,14 @@ ONNX Runtime CPU: mean=1708.989 ms, RTF=0.575, 1.739x realtime
 ONNX Runtime WebGPU + CPU fallback: mean=190.153 ms, RTF=0.064, 15.630x realtime
 ```
 
-WAV smoke test with `28.wav`, `--max-frames 32`, and WebGPU + CPU fallback:
+WAV smoke test with `28.wav`, `--start-frame 256`, `--max-frames 128`, and WebGPU + CPU fallback:
 
 ```text
-output_shape=1 1 16384
-latency_ms mean=141.244
-wrote_wav=/private/tmp/ort_webgpu_out_webgpu.wav sample_rate=44100 samples=16384
+mel_min=-9.05679 mel_max=1.06704 mel_mean=-4.44112
+f0_min=144.599 f0_max=263.861 f0_mean=224.544
+output_shape=1 1 65536
+latency_ms mean=164.239
+wrote_wav=/private/tmp/ort_webgpu_out_webgpu_fixed_voiced.wav sample_rate=44100 samples=65536
 ```
 
 For reference, the matching PyTorch checkpoint benchmark in the parent repository measured:

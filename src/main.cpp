@@ -43,12 +43,14 @@ struct Args {
   std::string dawn_backend;
   std::string power_preference = "high-performance";
   int frames = 256;
+  int start_frame = 0;
   int max_frames = 0;
   int sample_rate = 44100;
   int warmup = 5;
   int runs = 30;
   int threads = 1;
   bool disable_cpu_fallback = true;
+  bool print_feature_stats = false;
 };
 
 void PrintUsage(const char* argv0) {
@@ -62,12 +64,14 @@ void PrintUsage(const char* argv0) {
       << "  --dawn-backend NAME          auto, d3d12, or vulkan (default: auto)\n"
       << "  --power-preference NAME      high-performance or low-power (default: high-performance)\n"
       << "  --frames N                   mel/f0 frame count (default: 256)\n"
+      << "  --start-frame N              first extracted WAV feature frame to run (default: 0)\n"
       << "  --max-frames N               truncate extracted WAV features to N frames (default: no limit)\n"
       << "  --sample-rate N              output sample rate for WAV mode (default: 44100)\n"
       << "  --warmup N                   warmup runs (default: 5)\n"
       << "  --runs N                     measured runs (default: 30)\n"
       << "  --threads N                  ORT intra/inter op threads for CPU work (default: 1)\n"
-      << "  --allow-cpu-fallback         allow ORT to place unsupported nodes on CPU\n";
+      << "  --allow-cpu-fallback         allow ORT to place unsupported nodes on CPU\n"
+      << "  --print-feature-stats        print extracted WAV mel/F0 statistics\n";
 }
 
 std::string Lowercase(std::string value) {
@@ -103,6 +107,8 @@ Args ParseArgs(int argc, char** argv) {
       args.power_preference = need_value("--power-preference");
     } else if (key == "--frames") {
       args.frames = std::stoi(need_value("--frames"));
+    } else if (key == "--start-frame") {
+      args.start_frame = std::stoi(need_value("--start-frame"));
     } else if (key == "--max-frames") {
       args.max_frames = std::stoi(need_value("--max-frames"));
     } else if (key == "--sample-rate") {
@@ -115,6 +121,8 @@ Args ParseArgs(int argc, char** argv) {
       args.threads = std::stoi(need_value("--threads"));
     } else if (key == "--allow-cpu-fallback") {
       args.disable_cpu_fallback = false;
+    } else if (key == "--print-feature-stats") {
+      args.print_feature_stats = true;
     } else if (key == "--help" || key == "-h") {
       PrintUsage(argv[0]);
       std::exit(0);
@@ -127,9 +135,10 @@ Args ParseArgs(int argc, char** argv) {
   args.dawn_backend = Lowercase(args.dawn_backend);
   args.power_preference = Lowercase(args.power_preference);
 
-  if (args.frames <= 0 || args.max_frames < 0 || args.sample_rate <= 0 ||
+  if (args.frames <= 0 || args.start_frame < 0 || args.max_frames < 0 || args.sample_rate <= 0 ||
       args.warmup < 0 || args.runs <= 0 || args.threads <= 0) {
-    throw std::runtime_error("frames/sample-rate/runs/threads must be positive, max-frames/warmup must be non-negative");
+    throw std::runtime_error(
+        "frames/sample-rate/runs/threads must be positive, start-frame/max-frames/warmup must be non-negative");
   }
   if (args.provider != "webgpu" && args.provider != "cpu") {
     throw std::runtime_error("unsupported provider: " + args.provider);
@@ -247,16 +256,28 @@ InputTensors MakeSyntheticInputs(int frames) {
   return InputTensors{frames, MakeMel(frames), MakeF0(frames)};
 }
 
-InputTensors MakeAudioInputs(const fs::path& input_wav, int max_frames) {
-  AudioBuffer input = ReadWavMono(input_wav);
-  std::vector<float> audio = ResampleLinear(input.samples, input.sample_rate, 44100);
-  if (max_frames > 0) {
-    const size_t max_samples = static_cast<size_t>(max_frames) * 512;
-    if (audio.size() > max_samples) {
-      audio.resize(max_samples);
-    }
+void PrintVectorStats(const char* name, const std::vector<float>& values) {
+  float min_v = values.empty() ? 0.0f : values[0];
+  float max_v = values.empty() ? 0.0f : values[0];
+  double sum = 0.0;
+  for (float x : values) {
+    min_v = std::min(min_v, x);
+    max_v = std::max(max_v, x);
+    sum += x;
   }
-  VocoderFeatures features = ExtractVocoderFeatures(audio, 44100);
+  std::cout << name << "_min=" << min_v
+            << " " << name << "_max=" << max_v
+            << " " << name << "_mean=" << (values.empty() ? 0.0 : sum / values.size()) << '\n';
+}
+
+InputTensors MakeAudioInputs(const Args& args) {
+  AudioBuffer input = ReadWavMono(args.input_wav);
+  std::vector<float> audio = ResampleLinear(input.samples, input.sample_rate, 44100);
+  VocoderFeatures features = ExtractVocoderFeatures(audio, 44100, args.start_frame, args.max_frames);
+  if (args.print_feature_stats) {
+    PrintVectorStats("mel", features.mel);
+    PrintVectorStats("f0", features.f0);
+  }
   return InputTensors{features.frames, std::move(features.mel), std::move(features.f0)};
 }
 
@@ -349,7 +370,7 @@ int main(int argc, char** argv) {
 
     InputTensors input_tensors = args.input_wav.empty()
                                     ? MakeSyntheticInputs(args.frames)
-                                    : MakeAudioInputs(args.input_wav, args.max_frames);
+                                    : MakeAudioInputs(args);
 
     Ort::AllocatorWithDefaultOptions allocator;
     const size_t input_count = session.GetInputCount();
@@ -359,6 +380,7 @@ int main(int argc, char** argv) {
               << " input_wav=" << (args.input_wav.empty() ? "" : NativePathString(args.input_wav))
               << " output_wav=" << (args.output_wav.empty() ? "" : NativePathString(args.output_wav))
               << " frames=" << input_tensors.frames
+              << " start_frame=" << args.start_frame
               << " max_frames=" << args.max_frames
               << " warmup=" << (args.input_wav.empty() ? args.warmup : 0)
               << " runs=" << (args.input_wav.empty() ? args.runs : 1)
