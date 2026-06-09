@@ -92,13 +92,6 @@ $cl = Get-Command cl.exe -ErrorAction Stop
 $env:CC = $cl.Source
 $env:CXX = $cl.Source
 
-if ([string]::IsNullOrWhiteSpace($MsvcToolset) -and $env:VCToolsInstallDir) {
-  $msvcVersion = Split-Path -Leaf ($env:VCToolsInstallDir.TrimEnd('\'))
-  if ($msvcVersion -match "^(\d+\.\d+)") {
-    $MsvcToolset = $matches[1]
-  }
-}
-
 $vsNinja = Join-Path $env:VSINSTALLDIR "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe"
 if (Test-Path $vsNinja) {
   $env:CMAKE_MAKE_PROGRAM = $vsNinja
