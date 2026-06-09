@@ -155,6 +155,37 @@ function Clear-CMakeGeneratorCacheIfNeeded {
 
 Clear-CMakeGeneratorCacheIfNeeded -BuildDir (Join-Path $OrtBuildDir $Config) -ExpectedGenerator $CMakeGenerator
 
+function Clear-OrtCrtMismatchCacheIfNeeded {
+  $buildDir = Join-Path $OrtBuildDir $Config
+  $cachePath = Join-Path $buildDir "CMakeCache.txt"
+  if (-not (Test-Path $cachePath)) {
+    return
+  }
+
+  $cacheText = Get-Content -Path $cachePath -Raw
+  if ($cacheText -notmatch "protobuf_MSVC_STATIC_RUNTIME:BOOL=ON") {
+    return
+  }
+
+  Write-Host "Removing stale ORT CMake cache with static protobuf CRT."
+  Remove-Item -LiteralPath $cachePath -Force
+
+  $cmakeFiles = Join-Path $buildDir "CMakeFiles"
+  if (Test-Path $cmakeFiles) {
+    Remove-Item -LiteralPath $cmakeFiles -Recurse -Force
+  }
+
+  $depsDir = Join-Path $buildDir "_deps"
+  foreach ($name in @("protobuf-build", "protobuf-subbuild", "onnx-build", "onnx-subbuild")) {
+    $path = Join-Path $depsDir $name
+    if (Test-Path $path) {
+      Remove-Item -LiteralPath $path -Recurse -Force
+    }
+  }
+}
+
+Clear-OrtCrtMismatchCacheIfNeeded
+
 function Clear-OrtTransientBuildState {
   $vcpkgDir = Join-Path $OrtBuildDir "vcpkg"
   if (Test-Path $vcpkgDir) {
@@ -245,6 +276,10 @@ if ($env:CMAKE_MAKE_PROGRAM) {
 
 $cmakeDefines += "CMAKE_C_COMPILER=$env:CC"
 $cmakeDefines += "CMAKE_CXX_COMPILER=$env:CXX"
+$cmakeDefines += "CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`$<`$<CONFIG:Debug>:Debug>DLL"
+$cmakeDefines += "ONNX_USE_MSVC_STATIC_RUNTIME=OFF"
+$cmakeDefines += "protobuf_MSVC_STATIC_RUNTIME=OFF"
+$cmakeDefines += "ABSL_MSVC_STATIC_RUNTIME=OFF"
 
 $buildArgs = @(
   "$OrtSrc\tools\ci_build\build.py",

@@ -352,6 +352,10 @@ PyTorch ckpt MPS, remove weight norm: mean=125.904 ms, RTF=0.042, 23.607x realti
 - Re-run `scripts/build_ort_webgpu.ps1`; the Windows helper loads the MSVC environment, pins `CC`/`CXX` to `cl.exe`, uses Visual Studio's Ninja when available, and removes stale `vcpkg/buildtrees/detect_compiler` cache.
 - If multiple MSVC toolsets are installed, pass `-MsvcToolset "14.xx"` to match the selected Visual Studio toolchain.
 
+`RuntimeLibrary mismatch` or `LNK2038` with `libprotobuf-lite.lib`:
+
+- Re-run `scripts/build_ort_webgpu.ps1`; the Windows helper forces ORT, ONNX, Abseil, and Protobuf to use the dynamic MSVC runtime and removes stale protobuf CMake cache when needed.
+
 Plugin registration fails:
 
 - Ensure the WebGPU plugin library and its runtime dependencies are next to the executable or pass `--plugin`.
