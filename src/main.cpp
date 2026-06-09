@@ -252,6 +252,11 @@ struct InputTensors {
   std::vector<float> f0;
 };
 
+enum class MelLayout {
+  ChannelMajor,
+  TimeMajor,
+};
+
 InputTensors MakeSyntheticInputs(int frames) {
   return InputTensors{frames, MakeMel(frames), MakeF0(frames)};
 }
@@ -301,6 +306,30 @@ void PrintStats(const std::vector<double>& ms, int frames) {
   std::cout << "audio_ms=" << audio_ms
             << " realtime_factor=" << (mean / audio_ms)
             << " throughput_x_realtime=" << (audio_ms / mean) << '\n';
+}
+
+MelLayout DetectMelLayout(const std::vector<int64_t>& shape) {
+  if (shape.size() != 3) {
+    throw std::runtime_error("mel input must be rank 3");
+  }
+  if (shape[1] == 128) {
+    return MelLayout::ChannelMajor;
+  }
+  if (shape[2] == 128) {
+    return MelLayout::TimeMajor;
+  }
+  throw std::runtime_error("mel input shape must contain 128 mel bins in dim 1 or dim 2");
+}
+
+std::vector<float> ToTimeMajorMel(const std::vector<float>& channel_major_mel, int frames) {
+  std::vector<float> time_major(static_cast<size_t>(frames) * 128);
+  for (int c = 0; c < 128; ++c) {
+    for (int t = 0; t < frames; ++t) {
+      time_major[static_cast<size_t>(t) * 128 + c] =
+          channel_major_mel[static_cast<size_t>(c) * frames + t];
+    }
+  }
+  return time_major;
 }
 
 Ort::ConstEpDevice FindWebGpuDevice(Ort::Env& env) {
@@ -413,11 +442,20 @@ int main(int argc, char** argv) {
       std::cout << '\n';
     }
 
+    auto mel_info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+    const MelLayout mel_layout = DetectMelLayout(mel_info.GetShape());
+    std::vector<float> mel_time_major;
+    const float* mel_data = input_tensors.mel.data();
     std::array<int64_t, 3> mel_shape{1, 128, input_tensors.frames};
+    if (mel_layout == MelLayout::TimeMajor) {
+      mel_time_major = ToTimeMajorMel(input_tensors.mel, input_tensors.frames);
+      mel_data = mel_time_major.data();
+      mel_shape = {1, input_tensors.frames, 128};
+    }
     std::array<int64_t, 2> f0_shape{1, input_tensors.frames};
 
     Ort::MemoryInfo memory_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-    Ort::Value mel_value = Ort::Value::CreateTensor<float>(memory_info, input_tensors.mel.data(), input_tensors.mel.size(),
+    Ort::Value mel_value = Ort::Value::CreateTensor<float>(memory_info, const_cast<float*>(mel_data), input_tensors.mel.size(),
                                                            mel_shape.data(), mel_shape.size());
     Ort::Value f0_value = Ort::Value::CreateTensor<float>(memory_info, input_tensors.f0.data(), input_tensors.f0.size(),
                                                           f0_shape.data(), f0_shape.size());
@@ -426,7 +464,8 @@ int main(int argc, char** argv) {
     inputs.emplace_back(std::move(f0_value));
 
     const char* input_names[] = {"mel", "f0"};
-    const char* output_names[] = {"audio"};
+    auto output_name = session.GetOutputNameAllocated(0, allocator);
+    const char* output_names[] = {output_name.get()};
 
     auto run_once = [&]() {
       return session.Run(Ort::RunOptions{nullptr},
